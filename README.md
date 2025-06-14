@@ -1,1 +1,1 @@
-# gyroscope_activity
+# accelerometer_activity
