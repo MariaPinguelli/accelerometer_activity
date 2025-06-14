@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Controle por Acelerômetro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+        #data { 
+            font-size: 1.5em; margin: 20px; padding: 15px; 
+            background: #f0f0f0; border-radius: 10px;
+            min-height: 120px;
+        }
+        #status { color: #666; margin-top: 20px; }
+        .btn { 
+            background: #4CAF50; color: white; border: none; 
+            padding: 10px 20px; margin: 10px; border-radius: 5px; 
+            font-size: 1em; cursor: pointer;
+        }
+        #warning {
+            color: red;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid red;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Controle por Acelerômetro</h1>
+    <div id="warning"></div>
+    <div id="data">Aguardando inicialização...</div>
+    <div id="status">Não conectado</div>
+    <button id="connectBtn" class="btn">Ativar Acelerômetro</button>
+
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <script>
+        // Elementos da UI
+        const dataDiv = document.getElementById('data');
+        const statusDiv = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const warningDiv = document.getElementById('warning');
+
+        // Estado da aplicação
+        let isConnected = false;
+        let socket = null;
+        let accelActive = false;
+        let lastAcceleration = { x: 0, y: 0, z: 0 };
+
+        // 1. Verificação inicial do ambiente
+        function checkEnvironment() {
+            // Verificar suporte básico
+            if (!window.DeviceMotionEvent) {
+                showError("Seu dispositivo não suporta a API DeviceMotion (acelerômetro)");
+                return false;
+            }
+
+            // Verificar contexto seguro
+            if (!window.isSecureContext) {
+                showError("Acesso ao acelerômetro requer HTTPS ou localhost");
+                return false;
+            }
+
+            return true;
+        }
+
+        // 2. Configuração do WebSocket
+        function setupSocket() {
+            socket = io({
+                reconnectionAttempts: 3,
+                timeout: 2000
+            });
+
+            socket.on('connect', () => {
+                isConnected = true;
+                statusDiv.textContent = "Conectado!";
+                statusDiv.style.color = "green";
+                connectBtn.textContent = "Desativar";
+                startAccelerometer();
+            });
+
+            socket.on('disconnect', () => {
+                isConnected = false;
+                statusDiv.textContent = "Desconectado";
+                statusDiv.style.color = "red";
+                connectBtn.textContent = "Ativar";
+                stopAccelerometer();
+            });
+
+            socket.on('connect_error', (err) => {
+                showError(`Erro de conexão: ${err.message}`);
+            });
+        }
+
+        // 3. Controle do Acelerômetro
+        async function startAccelerometer() {
+            if (accelActive) return;
+
+            try {
+                // iOS 13+ e alguns Androids requerem permissão explícita
+                if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                    const permission = await DeviceMotionEvent.requestPermission();
+                    if (permission !== 'granted') {
+                        showError("Permissão ao acelerômetro negada");
+                        return;
+                    }
+                }
+
+                window.addEventListener('devicemotion', handleMotion);
+                accelActive = true;
+                dataDiv.textContent = "Acelerômetro ativo - mova o dispositivo";
+
+            } catch (error) {
+                showError(`Erro ao acessar acelerômetro: ${error.message}`);
+            }
+        }
+
+        function stopAccelerometer() {
+            window.removeEventListener('devicemotion', handleMotion);
+            accelActive = false;
+            dataDiv.textContent = "Acelerômetro desativado";
+        }
+
+        function handleMotion(event) {
+            const acceleration = event.accelerationIncludingGravity || event.acceleration;
+            
+            if (!acceleration || acceleration.x === null || acceleration.y === null || acceleration.z === null) {
+                dataDiv.textContent = "Dados do acelerômetro não disponíveis";
+                return;
+            }
+
+            // Suavização dos dados (opcional)
+            lastAcceleration = {
+                x: lastAcceleration.x * 0.7 + acceleration.x * 0.3,
+                y: lastAcceleration.y * 0.7 + acceleration.y * 0.3,
+                z: lastAcceleration.z * 0.7 + acceleration.z * 0.3
+            };
+
+            // Exibição dos dados
+            dataDiv.innerHTML = `
+                Eixo X: ${lastAcceleration.x.toFixed(2)} m/s²<br>
+                Eixo Y: ${lastAcceleration.y.toFixed(2)} m/s²<br>
+                Eixo Z: ${lastAcceleration.z.toFixed(2)} m/s²<br>
+                <small>Inclinação aproximada: ${calculateTilt(lastAcceleration)}</small>
+            `;
+
+            // Envio via WebSocket
+            if (isConnected && socket) {
+                socket.emit('accel_data', lastAcceleration);
+            }
+        }
+
+        // Calcula inclinação aproximada
+        function calculateTilt(accel) {
+            const tiltX = Math.atan2(accel.y, accel.z) * (180 / Math.PI);
+            const tiltY = Math.atan2(accel.x, accel.z) * (180 / Math.PI);
+            return `X: ${tiltX.toFixed(1)}°, Y: ${tiltY.toFixed(1)}°`;
+        }
+
+        // 4. Controle da UI
+        function showError(message) {
+            warningDiv.style.display = 'block';
+            warningDiv.textContent = message;
+            console.error(message);
+        }
+
+        // 5. Inicialização
+        function init() {
+            if (!checkEnvironment()) return;
+
+            connectBtn.disabled = false;
+            connectBtn.addEventListener('click', async () => {
+                if (!isConnected) {
+                    setupSocket();
+                } else {
+                    if (socket) socket.disconnect();
+                }
+            });
+        }
+
+        // Iniciar a aplicação
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
